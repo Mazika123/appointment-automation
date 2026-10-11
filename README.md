@@ -18,7 +18,7 @@ It also includes a scheduled workflow for processing records stored in Google Sh
 
 ## Workflow Preview
 
-![Appointment Automation Workflow](screenshots/workflow.png)
+![Appointment Automation Workflow](screenshots/workflow.png.png)
 
 ## Workflow Architecture
 
