@@ -1,0 +1,765 @@
+{
+  "name": "Appointment Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Book an Appointment",
+        "formDescription": "Complete the form to request an appointment. Your booking is confirmed only after the system checks availability.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Name",
+              "placeholder": "Please enter your name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fieldType": "email",
+              "placeholder": "example@gmail.com",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "phone number",
+              "placeholder": "01xxxxxxxxx",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Service",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Dental Checkup"
+                  },
+                  {
+                    "option": "Dental Filling"
+                  },
+                  {
+                    "option": "Consultation"
+                  },
+                  {
+                    "option": "Teeth Cleaning"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Date",
+              "fieldType": "date",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "time",
+              "placeholder": "09:00 (24-hour format)",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Notes",
+              "fieldType": "textarea",
+              "placeholder": "Optional notes"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -800,
+        0
+      ],
+      "id": "af6eca70-f1d0-4c47-8534-a7e5c9b229fb",
+      "name": "Appointment Form",
+      "webhookId": "c3b31a1c-5ad6-4fee-9575-8743983292bf"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const d = $json;\nconst name = String(d.Name ?? '').trim();\nconst email = String(d.Email ?? '').trim();\nconst rawPhone = String(d['phone number'] ?? '').trim().replace(/[\\s()-]/g, '');\nconst service = String(d.Service ?? '').trim();\nconst date = String(d.Date ?? '').trim();\nlet time = String(d.time ?? '').trim();\nconst notes = String(d.Notes ?? d['Notes:'] ?? '').trim();\nif (!name || !email || !rawPhone || !service || !date || !time) throw new Error('Name, email, phone, service, date and time are required.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) throw new Error('Please provide a valid email address.');\nif (/^01\\d{9}$/.test(rawPhone)) { /* Egypt mobile local format accepted */ } else if (/^\\+?201\\d{9}$/.test(rawPhone)) { /* international format accepted */ } else throw new Error('Phone must be an Egyptian mobile number, e.g. 01012345678 or +201012345678.');\nif (/^\\d{1}:\\d{2}$/.test(time)) time = '0' + time;\nif (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time)) throw new Error('Time must use 24-hour HH:mm format, e.g. 09:30.');\nif (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || Number.isNaN(Date.parse(date + 'T00:00:00Z'))) throw new Error('Please provide a valid date.');\nconst phone = rawPhone.startsWith('01') ? '+20' + rawPhone.slice(1) : rawPhone.startsWith('201') ? '+' + rawPhone : rawPhone;\n// Clinic timezone is Africa/Cairo. Luxon is available in n8n Code nodes through DateTime.\nconst start = DateTime.fromISO(`${date}T${time}`, { zone: 'Africa/Cairo' });\nif (!start.isValid) throw new Error('Invalid appointment date/time.');\nif (start <= DateTime.now().setZone('Africa/Cairo')) throw new Error('Appointment must be in the future.');\nconst end = start.plus({ minutes: 60 });\nreturn { json: { name, email, phone, service, date, time, notes, requested_start: start.toUTC().toISO(), requested_end: end.toUTC().toISO(), source: 'n8n_form', appointment_id: `AP-${$execution.id}`, status: 'confirmed' } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        0
+      ],
+      "id": "b7816a2d-9046-4ff4-8693-c470ec761204",
+      "name": "Normalize and Validate"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "6779185316a7ea4b522000098a4efa65e1231ceb3f5a377b83d766adb5172e36@group.calendar.google.com",
+          "mode": "id"
+        },
+        "timeMin": "={{ DateTime.fromISO($json.date, { zone: 'Africa/Cairo' }).startOf('day').toUTC().toISO() }}",
+        "timeMax": "={{ DateTime.fromISO($json.date, { zone: 'Africa/Cairo' }).endOf('day').toUTC().toISO() }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        -320,
+        0
+      ],
+      "id": "98c09801-da72-46e3-9056-2ffb388f60bc",
+      "name": "Get Calendar Events for Date",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "LEaTByd8IIboA0yi",
+          "name": "Google Calendar account"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const booking = $('Normalize and Validate').first().json;\nconst events = $input.all();\nconst start = new Date(booking.requested_start);\nconst end = new Date(booking.requested_end);\nlet available = true;\nfor (const item of events) {\n const e = item.json || {}; if (!e.start || !e.end) continue;\n const es = new Date(e.start.dateTime || e.start.date); const ee = new Date(e.end.dateTime || e.end.date);\n if (!Number.isNaN(es.getTime()) && !Number.isNaN(ee.getTime()) && start < ee && end > es) { available = false; break; }\n}\nreturn [{ json: { ...booking, available } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        0
+      ],
+      "id": "b71d620d-8a77-4129-bcc7-ffd3ee0ba42e",
+      "name": "Check Availability"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f1974c54-c1dc-49ea-89f4-ac901851c8ac",
+              "leftValue": "={{ $json.available }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        160,
+        0
+      ],
+      "id": "72bfd8bb-9549-4151-8472-5f0f402310a1",
+      "name": "Is Slot Available?"
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "6779185316a7ea4b522000098a4efa65e1231ceb3f5a377b83d766adb5172e36@group.calendar.google.com",
+          "mode": "id"
+        },
+        "start": "={{ $json.requested_start }}",
+        "end": "={{ $json.requested_end }}",
+        "additionalFields": {
+          "description": "=Name: {{ $json.name }}\\nPhone: {{ $json.phone }}\\nEmail: {{ $json.email }}\\nNotes: {{ $json.notes }}\\nAppointment ID: {{ $json.appointment_id }}",
+          "summary": "={{ $json.service }} — {{ $json.name }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        400,
+        -120
+      ],
+      "id": "57ccd871-cd16-4c23-b5d0-d4484b72d0d1",
+      "name": "Create Calendar Event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "LEaTByd8IIboA0yi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const b = $('Check Availability').first().json;\nconst e = $json;\nreturn { json: { ...b, calendar_event_id: e.id || '', calendar_status: e.status || 'confirmed', created_at: e.created || new Date().toISOString() } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        -120
+      ],
+      "id": "c5f60a78-cf61-4152-a676-0364f5d4caba",
+      "name": "Prepare Confirmed Record"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "19HwalmAeg0t0iiqtHqxVvCdtOYrDtFrEvo0zsTUgYkU",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "appointment_id": "={{ $json.appointment_id }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "service": "={{ $json.service }}",
+            "date": "={{ $json.date }}",
+            "status": "confirmed",
+            "start_time": "={{ $json.requested_start }}",
+            "end_time": "={{ $json.requested_end }}",
+            "source": "={{ $json.source }}",
+            "calendar_event_id": "={{ $json.calendar_event_id }}",
+            "created_at": "={{ $json.created_at }}",
+            "reminder_sent": "false",
+            "24_hour_before_reminder": "false"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "appointment_id",
+              "displayName": "appointment_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "service",
+              "displayName": "service",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "calendar_event_id",
+              "displayName": "calendar_event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "reminder_sent",
+              "displayName": "reminder_sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "24_hour_before_reminder",
+              "displayName": "24_hour_before_reminder",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        880,
+        -120
+      ],
+      "id": "da8e2600-4326-4002-80af-71062e823a24",
+      "name": "Save Confirmed Appointment",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dLRMaAU9iAy1hqxW",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Prepare Confirmed Record').item.json.email }}",
+        "subject": "=Appointment Confirmed - {{ $('Prepare Confirmed Record').item.json.service }}",
+        "message": "=Hi {{ $('Prepare Confirmed Record').item.json.name }},\n\nYour appointment has been confirmed.\n\nService: {{ $('Prepare Confirmed Record').item.json.service }}\nDate: {{ $('Prepare Confirmed Record').item.json.date }}\nTime: {{ $('Prepare Confirmed Record').item.json.time }} (Africa/Cairo)\nAppointment ID: {{ $('Prepare Confirmed Record').item.json.appointment_id }}\n\nIf you need to reschedule or cancel, please contact the clinic at least 24 hours in advance.\n\nDental Clinic Team",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        -120
+      ],
+      "id": "f9745583-d767-4277-a733-42e29be6168a",
+      "name": "Send Confirmation Email",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DzVcXBjpx1esshJZ",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const b = $('Check Availability').first().json;\nreturn { json: { ...b, message: `Sorry ${b.name}, ${b.date} at ${b.time} is already booked. Please submit the form again with another time. No appointment was created.` } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        120
+      ],
+      "id": "c7bf2022-60c2-48fb-b000-db001ae3570c",
+      "name": "Prepare Unavailable Message"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "Appointment time unavailable",
+        "message": "={{ $json.message }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        120
+      ],
+      "id": "2323b3e2-499b-4ea8-8a06-bd0149fd86c8",
+      "name": "Send Unavailable Email",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DzVcXBjpx1esshJZ",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -800,
+        420
+      ],
+      "id": "9687b058-0484-4226-bfa0-52af9e7ff944",
+      "name": "Hourly Reminder Check"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "19HwalmAeg0t0iiqtHqxVvCdtOYrDtFrEvo0zsTUgYkU",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "filtersUI": {
+          "values": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -560,
+        420
+      ],
+      "id": "8984b325-8dcf-4239-adc3-fc3023e37ed5",
+      "name": "Read Appointments for Reminders",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dLRMaAU9iAy1hqxW",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const now = DateTime.now().setZone('Africa/Cairo');\nconst end = now.plus({ hours: 24 });\nconst out = [];\nfor (const item of $input.all()) { const r = item.json || {}; if (String(r.status || '').toLowerCase() !== 'confirmed') continue; if (String(r['24_hour_before_reminder'] || 'false').toLowerCase() === 'true') continue; const raw = r.start_time; if (!raw || !r.email) continue; const dt = DateTime.fromISO(String(raw), { setZone: true }).setZone('Africa/Cairo'); if (dt.isValid && dt > now && dt <= end) out.push({ json: { ...r, formatted_date: dt.toFormat('LLL d, yyyy'), formatted_time: dt.toFormat('hh:mm a') } }); }\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        420
+      ],
+      "id": "13739197-d286-4765-ab19-f74f7d01d8bd",
+      "name": "Find Due Reminders"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "Reminder: Your Dental Appointment",
+        "message": "=Hi {{ $json.name }},\n\nThis is a reminder of your upcoming appointment within the next 24 hours.\n\nService: {{ $json.service }}\nDate: {{ $json.formatted_date }}\nTime: {{ $json.formatted_time }} (Africa/Cairo)\n\nPlease contact the clinic if you need to reschedule or cancel.\n\nDental Clinic Team",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -80,
+        420
+      ],
+      "id": "16b01ae6-aa9c-4569-9119-3cf21cf2becd",
+      "name": "Send 24-Hour Reminder",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DzVcXBjpx1esshJZ",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "19HwalmAeg0t0iiqtHqxVvCdtOYrDtFrEvo0zsTUgYkU",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "appointment_id": "={{ $('Find Due Reminders').item.json.appointment_id }}",
+            "24_hour_before_reminder": "true"
+          },
+          "matchingColumns": [
+            "appointment_id"
+          ],
+          "schema": [
+            {
+              "id": "appointment_id",
+              "displayName": "appointment_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "24_hour_before_reminder",
+              "displayName": "24_hour_before_reminder",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        160,
+        420
+      ],
+      "id": "26f95356-51e8-474b-83e3-9b32c978703b",
+      "name": "Mark Reminder Sent",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dLRMaAU9iAy1hqxW",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Appointment Form": {
+      "main": [
+        [
+          {
+            "node": "Normalize and Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize and Validate": {
+      "main": [
+        [
+          {
+            "node": "Get Calendar Events for Date",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Calendar Events for Date": {
+      "main": [
+        [
+          {
+            "node": "Check Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Availability": {
+      "main": [
+        [
+          {
+            "node": "Is Slot Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Slot Available?": {
+      "main": [
+        [
+          {
+            "node": "Create Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Unavailable Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Prepare Confirmed Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Confirmed Record": {
+      "main": [
+        [
+          {
+            "node": "Save Confirmed Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Confirmed Appointment": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Unavailable Message": {
+      "main": [
+        [
+          {
+            "node": "Send Unavailable Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hourly Reminder Check": {
+      "main": [
+        [
+          {
+            "node": "Read Appointments for Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Appointments for Reminders": {
+      "main": [
+        [
+          {
+            "node": "Find Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Due Reminders": {
+      "main": [
+        [
+          {
+            "node": "Send 24-Hour Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send 24-Hour Reminder": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Africa/Cairo"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
